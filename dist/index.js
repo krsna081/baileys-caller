@@ -332,6 +332,17 @@ export class VoipClient {
             const { useMultiFileAuthState } = baileys;
             const { state, saveCreds } = await useMultiFileAuthState(this._config.authDir);
 
+            const dummyLogger = {
+                level: 'silent',
+                trace: () => {},
+                debug: () => {},
+                info: () => {},
+                warn: () => {},
+                error: () => {},
+                fatal: () => {}
+            };
+            dummyLogger.child = () => dummyLogger;
+
             const sock = makeWASocket({
                 auth: state,
                 printQRInTerminal: false,
@@ -342,16 +353,7 @@ export class VoipClient {
                 defaultQueryTimeoutMs: 60000,
                 keepAliveIntervalMs: 30000,
                 emitOwnEvents: true,
-                logger: {
-                    level: 'silent',
-                    trace: () => {},
-                    debug: () => {},
-                    info: () => {},
-                    warn: () => {},
-                    error: () => {},
-                    fatal: () => {},
-                    child: () => sock.logger
-                }
+                logger: dummyLogger
             });
 
             sock.ev.on('creds.update', saveCreds);

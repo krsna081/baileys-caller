@@ -301,11 +301,13 @@ export class VoipClient {
         this._videoFeeder = null;
         this._wsCallHandler = null;
         this._wsReceiptHandler = null;
+        this._connectionState = 'close';
         this._captureStartRequested = false;
         this._audioStartTimer = null;
 
         this.getSocket = () => this._sock;
         this.isRegistered = () => !!this._sock?.authState?.creds?.registered;
+        this.isOpen = () => this._connectionState === 'open' && this._sock?.ws?.readyState === 1;
 
         this.requestPairingCode = async (phoneNumber) => {
             if (!this._sock) {
@@ -344,6 +346,7 @@ export class VoipClient {
             dummyLogger.child = () => dummyLogger;
 
             const sock = makeWASocket({
+                version: [2, 3000, 1048712335],
                 auth: state,
                 printQRInTerminal: false,
                 browser: ["Mac OS", "Chrome", "139.0.7258.164"],
@@ -357,6 +360,11 @@ export class VoipClient {
             });
 
             sock.ev.on('creds.update', saveCreds);
+            sock.ev.on('connection.update', (update) => {
+                if (update.connection) {
+                    this._connectionState = update.connection;
+                }
+            });
 
             this._sock = sock;
             this._externalSocket = false;
@@ -379,15 +387,17 @@ export class VoipClient {
                     return;
                 }
 
-                if (!this._sock.ws || this._sock.ws.readyState !== 1) {
+                if (!this._sock.ws || this._sock.ws.readyState !== 1 || this._connectionState !== 'open') {
                     await new Promise((resolve) => {
-                        const timeout = setTimeout(() => resolve(), 25000);
-                        this._sock.ev.on('connection.update', (update) => {
+                        const timeout = setTimeout(() => resolve(), 30000);
+                        const onUpdate = (update) => {
                             if (update.connection === 'open') {
+                                this._sock?.ev?.off?.('connection.update', onUpdate);
                                 clearTimeout(timeout);
                                 resolve();
                             }
-                        });
+                        };
+                        this._sock.ev.on('connection.update', onUpdate);
                     });
                 }
             }
@@ -395,7 +405,9 @@ export class VoipClient {
             if (!this._sock.ws || this._sock.ws.readyState !== 1) {
                 throw new Error('the socket has no open websocket yet; call connect() once connection.update reports "open"');
             }
-            await this._initVoipStack();
+            if (!this._engine) {
+                await this._initVoipStack();
+            }
         };
 
         this.attach = async socket => {

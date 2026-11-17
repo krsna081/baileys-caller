@@ -701,7 +701,7 @@ export class VoipClient {
                 this._log("[RTC GROUP ENSURE SESSIONS WARNING]", err?.message || err);
             }
 
-            const callId = ("00" + randomBytes(16).toString("hex").slice(2)).toUpperCase();
+            const callId = randomBytes(16).toString("hex").toUpperCase();
             const call = new ActiveCall(callId, this._engine, opts.durationMs ?? 120000);
 
             call._audioSource = opts.audioSource ?? "silence";
@@ -714,6 +714,10 @@ export class VoipClient {
             call._videoSource = opts.videoSource ?? "black";
             call._videoPlaylist = Array.isArray(opts.videoPlaylist) ? opts.videoPlaylist.filter(Boolean) : [];
             call.groupJid = groupJid;
+            call.participants = lidUserJids.map((lid, idx) => ({
+                jid: lid,
+                devices: (deviceJidsCsv[idx] ? deviceJidsCsv[idx].split(",") : [lid])
+            }));
             this._activeCall = call;
 
             call.once("ended", () => {

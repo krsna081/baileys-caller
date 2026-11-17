@@ -5,6 +5,8 @@ const TC_TOKEN_REQUEST_TIMEOUT_MS = 15000;
 const SESSION_CACHE_TTL_MS = 5 * 60000;
 const ACK_TIMEOUT_MS = 15000;
 
+import { randomBytes } from "node:crypto";
+
 let _baileysModule = null;
 
 export const setBaileysModule = (mod) => {
@@ -495,6 +497,76 @@ export class SignalingBridge {
             } catch {}
         };
 
+        this._buildGroupOfferNode = (callId, groupJid, callCreatorDevice, participants, isVideo) => {
+            const creatorBare = this._toBareJid(callCreatorDevice);
+            const creatorDevice = this._toCallDeviceJid(callCreatorDevice);
+
+            const CAPABILITY_OFFER = new Uint8Array([0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x07]);
+            const CAPABILITY_VIDEO_OFFER = new Uint8Array([0x01, 0x05, 0xf7, 0x09, 0xe0, 0xfa, 0x03]);
+
+            const users = [
+                {
+                    tag: "user",
+                    attrs: { jid: creatorBare },
+                    content: [{
+                        tag: "device",
+                        attrs: { jid: creatorDevice },
+                        content: [{
+                            tag: "capability",
+                            attrs: { ver: "1" },
+                            content: isVideo ? CAPABILITY_VIDEO_OFFER : CAPABILITY_OFFER
+                        }]
+                    }]
+                }
+            ];
+
+            for (const part of participants) {
+                const partBare = this._toBareJid(part.jid);
+                if (partBare === creatorBare) continue;
+                const rawDevices = part.devices && part.devices.length ? part.devices : [part.jid];
+                const devices = rawDevices.map(d => this._toCallDeviceJid(d));
+                users.push({
+                    tag: "user",
+                    attrs: { jid: partBare },
+                    content: devices.map(dJid => ({
+                        tag: "device",
+                        attrs: { jid: dJid }
+                    }))
+                });
+            }
+
+            const offerContent = [
+                { tag: "audio", attrs: { enc: "opus", rate: "8000" } },
+                { tag: "audio", attrs: { enc: "opus", rate: "16000" } }
+            ];
+
+            if (isVideo) {
+                offerContent.push({
+                    tag: "video",
+                    attrs: {
+                        enc: "108:128",
+                        dec: "108:128",
+                        screen_width: "1920",
+                        screen_height: "1080",
+                        device_orientation: "0"
+                    }
+                });
+            }
+
+            offerContent.push({ tag: "net", attrs: { medium: "3" } });
+            offerContent.push({ tag: "group_info", attrs: {}, content: users });
+
+            return {
+                tag: "offer",
+                attrs: {
+                    "call-id": callId,
+                    "call-creator": creatorDevice,
+                    "group-jid": groupJid
+                },
+                content: offerContent
+            };
+        };
+
         this._doSendSignaling = async (peerJid, callId, xmlPayload) => {
             const { decodeBinaryNode, getBinaryNodeChild } = this._baileys;
             const rawPayload = Buffer.from(xmlPayload);
@@ -509,6 +581,24 @@ export class SignalingBridge {
             const signalingTag = String(voipNode.tag);
             const effectivePeerJid = this._resolveOutboundPeerJid(callId, peerJid);
 
+            // Group Call Offer builder (Zapo / WhatsApp MD VoIP specification compliant)
+            if (signalingTag === "offer" && this._voip?._activeCall?.groupJid) {
+                const groupJid = this._voip._activeCall.groupJid;
+                const participants = this._voip._activeCall.participants || [];
+                const isVideo = !!this._voip._activeCall._video;
+                const selfCreatorDevice =
+                    this._sock.authState?.creds?.me?.lid ||
+                    this._sock.authState?.creds?.me?.lidJid ||
+                    this._sock.authState?.creds?.me?.id ||
+                    this._sock.user?.lid ||
+                    this._sock.user?.id || "";
+
+                voipNode = this._buildGroupOfferNode(callId, groupJid, selfCreatorDevice, participants, isVideo);
+                const routeTo = `${callId}@call`;
+                await this._sendCallStanza(routeTo, voipNode, signalingTag, routeTo, peerJid);
+                return;
+            }
+
             if (signalingTag === "offer") {
                 if (!voipNode.attrs["call-creator"]) {
                     const selfCreator =
@@ -521,9 +611,8 @@ export class SignalingBridge {
                     if (selfCreator) voipNode.attrs["call-creator"] = this._toBareJid(selfCreator);
                 }
                 const activeGroupJid = this._voip?._activeCall?.groupJid || (peerJid && peerJid.endsWith("@g.us") ? peerJid : null);
-                if (activeGroupJid) {
-                    if (!voipNode.attrs["group-jid"]) voipNode.attrs["group-jid"] = activeGroupJid;
-                    if (!voipNode.attrs["type"]) voipNode.attrs["type"] = "group";
+                if (activeGroupJid && !voipNode.attrs["group-jid"]) {
+                    voipNode.attrs["group-jid"] = activeGroupJid;
                 }
             }
 
@@ -615,13 +704,14 @@ export class SignalingBridge {
                     }
                 }
             }
-            if (voipNode && voipNode.attrs) {
-                if (activeGroupJid) {
-                    if (!voipNode.attrs["group-jid"]) voipNode.attrs["group-jid"] = activeGroupJid;
-                    if (!voipNode.attrs["type"]) voipNode.attrs["type"] = "group";
+            if (voipNode && voipNode.attrs && signalingTag === "offer") {
+                if (activeGroupJid && !voipNode.attrs["group-jid"]) {
+                    voipNode.attrs["group-jid"] = activeGroupJid;
                 }
             }
-            const stanzaId = this._sock.generateMessageTag();
+            const stanzaId = cleanRouteTo && cleanRouteTo.endsWith("@call")
+                ? randomBytes(16).toString("hex").toUpperCase()
+                : this._sock.generateMessageTag();
             this._log("[RTC SEND CALL STANZA]", { to: cleanRouteTo, id: stanzaId, tag: signalingTag, peer: cleanEffective });
 
             await this._sock.sendNode({

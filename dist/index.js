@@ -866,7 +866,10 @@ export class VoipClient {
         this._handleCallEvent = (eventType, eventData) => {
             this._log("[RTC CALL EVENT]", { eventType, hasData: !!eventData, data: eventData });
 
-            if (eventType === 16 && eventData) {
+            if (eventType === 4) {
+                this._log("[RTC CALL SETUP ERROR EVENT 4]", eventData);
+                this._activeCall?._forceEnd("call_setup_error_4");
+            } else if (eventType === 16 && eventData) {
                 try {
                     const parsed = JSON.parse(eventData);
                     const info = parsed.call_info ?? parsed.callInfo ?? {};

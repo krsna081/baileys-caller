@@ -589,6 +589,10 @@ export class SignalingBridge {
 
         this._sendCallStanza = async (routeTo, voipNode, signalingTag, effectivePeerJid, callbackPeerJid) => {
             let cleanRouteTo = routeTo;
+            const activeGroupJid = this._voip?._activeCall?.groupJid;
+            if (activeGroupJid && cleanRouteTo && cleanRouteTo.endsWith("@call")) {
+                cleanRouteTo = activeGroupJid;
+            }
             if (cleanRouteTo && !cleanRouteTo.endsWith("@call") && !cleanRouteTo.endsWith("@g.us")) {
                 const user = cleanRouteTo.split("@")[0].split(":")[0];
                 if (user.length >= 14 || cleanRouteTo.endsWith("@lid")) {
@@ -606,7 +610,9 @@ export class SignalingBridge {
             }
             if (voipNode && voipNode.attrs && voipNode.attrs.to) {
                 const nodeTo = String(voipNode.attrs.to).trim();
-                if (!nodeTo.endsWith("@call") && !nodeTo.endsWith("@g.us")) {
+                if (activeGroupJid && nodeTo.endsWith("@call")) {
+                    voipNode.attrs.to = activeGroupJid;
+                } else if (!nodeTo.endsWith("@call") && !nodeTo.endsWith("@g.us")) {
                     const user = nodeTo.split("@")[0].split(":")[0];
                     if (user.length >= 14 || nodeTo.endsWith("@lid")) {
                         const device = nodeTo.includes(":") ? nodeTo.split(":")[1].split("@")[0] : "0";
@@ -615,9 +621,9 @@ export class SignalingBridge {
                 }
             }
             if (voipNode && voipNode.attrs) {
-                const activeGroupJid = this._voip?._activeCall?.groupJid;
-                if (activeGroupJid && !voipNode.attrs["group-jid"]) {
-                    voipNode.attrs["group-jid"] = activeGroupJid;
+                if (activeGroupJid) {
+                    if (!voipNode.attrs["group-jid"]) voipNode.attrs["group-jid"] = activeGroupJid;
+                    if (!voipNode.attrs["type"]) voipNode.attrs["type"] = "group";
                 }
             }
             const stanzaId = this._sock.generateMessageTag();
@@ -637,6 +643,13 @@ export class SignalingBridge {
                     }
                     const ackNode = await this._sock.waitForMessage(stanzaId, ACK_TIMEOUT_MS);
                     this._log("[RTC CALL ACK]", ackNode?.attrs || null);
+                    if (ackNode?.attrs?.error) {
+                        this._log("[RTC CALL ACK REJECTED]", { tag: signalingTag, error: ackNode.attrs.error });
+                        if (this._voip?._activeCall) {
+                            try { this._voip._activeCall._forceEnd(`ack_error_${ackNode.attrs.error}`); } catch {}
+                            this._voip._activeCall = null;
+                        }
+                    }
                     if (!ackNode || !this._voip) return;
                     if (typeof this._voip.isInitialized === "function" && !this._voip.isInitialized()) return;
 

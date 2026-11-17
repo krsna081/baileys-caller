@@ -499,10 +499,27 @@ export class SignalingBridge {
 
         this._buildGroupOfferNode = (callId, groupJid, callCreatorDevice, participants, isVideo) => {
             const creatorBare = this._toBareJid(callCreatorDevice);
-            const creatorDevice = this._toCallDeviceJid(callCreatorDevice);
+            const creatorDevice = callCreatorDevice && callCreatorDevice.includes(":")
+                ? callCreatorDevice
+                : (callCreatorDevice ? `${creatorBare.split("@")[0]}:0@lid` : "");
 
             const CAPABILITY_OFFER = new Uint8Array([0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x07]);
             const CAPABILITY_VIDEO_OFFER = new Uint8Array([0x01, 0x05, 0xf7, 0x09, 0xe0, 0xfa, 0x03]);
+
+            const normalizeDeviceJid = (jid) => {
+                if (!jid) return "";
+                const str = String(jid).trim();
+                const parts = str.split("@");
+                if (parts.length !== 2) return str;
+                const userPart = parts[0];
+                const server = parts[1];
+                if (userPart.includes(":")) {
+                    const [user, device] = userPart.split(":");
+                    if (device === "0" || !device) return `${user}@${server}`;
+                    return `${user}:${device}@${server}`;
+                }
+                return str;
+            };
 
             const users = [
                 {
@@ -510,7 +527,7 @@ export class SignalingBridge {
                     attrs: { jid: creatorBare },
                     content: [{
                         tag: "device",
-                        attrs: { jid: creatorDevice },
+                        attrs: { jid: creatorDevice || creatorBare },
                         content: [{
                             tag: "capability",
                             attrs: { ver: "1" },
@@ -522,9 +539,11 @@ export class SignalingBridge {
 
             for (const part of participants) {
                 const partBare = this._toBareJid(part.jid);
-                if (partBare === creatorBare) continue;
-                const rawDevices = part.devices && part.devices.length ? part.devices : [part.jid];
-                const devices = rawDevices.map(d => this._toCallDeviceJid(d));
+                if (!partBare || partBare === creatorBare) continue;
+                const rawDevices = Array.isArray(part.devices) && part.devices.length ? part.devices : [part.jid];
+                const devices = [...new Set(rawDevices.map(d => normalizeDeviceJid(d)).filter(Boolean))];
+                if (!devices.length) devices.push(partBare);
+
                 users.push({
                     tag: "user",
                     attrs: { jid: partBare },
@@ -560,7 +579,7 @@ export class SignalingBridge {
                 tag: "offer",
                 attrs: {
                     "call-id": callId,
-                    "call-creator": creatorDevice,
+                    "call-creator": creatorDevice || creatorBare,
                     "group-jid": groupJid
                 },
                 content: offerContent
@@ -713,6 +732,9 @@ export class SignalingBridge {
                 ? randomBytes(16).toString("hex").toUpperCase()
                 : this._sock.generateMessageTag();
             this._log("[RTC SEND CALL STANZA]", { to: cleanRouteTo, id: stanzaId, tag: signalingTag, peer: cleanEffective });
+            if (signalingTag === "offer") {
+                this._log("[RTC GROUP OFFER STANZA FULL]", JSON.stringify(voipNode, (k, v) => (v instanceof Uint8Array ? `<bytes ${v.length}>` : v), 2));
+            }
 
             await this._sock.sendNode({
                 tag: "call",
@@ -728,6 +750,7 @@ export class SignalingBridge {
                     }
                     const ackNode = await this._sock.waitForMessage(stanzaId, ACK_TIMEOUT_MS);
                     this._log("[RTC CALL ACK]", ackNode?.attrs || null);
+                    this._log("[RTC CALL ACK FULL]", JSON.stringify(ackNode, null, 2));
                     if (ackNode?.attrs?.error) {
                         this._log("[RTC CALL ACK REJECTED]", { tag: signalingTag, error: ackNode.attrs.error });
                         if (this._voip?._activeCall) {

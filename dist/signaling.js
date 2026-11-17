@@ -590,9 +590,6 @@ export class SignalingBridge {
         this._sendCallStanza = async (routeTo, voipNode, signalingTag, effectivePeerJid, callbackPeerJid) => {
             let cleanRouteTo = routeTo;
             const activeGroupJid = this._voip?._activeCall?.groupJid;
-            if (activeGroupJid && cleanRouteTo && cleanRouteTo.endsWith("@call")) {
-                cleanRouteTo = activeGroupJid;
-            }
             if (cleanRouteTo && !cleanRouteTo.endsWith("@call") && !cleanRouteTo.endsWith("@g.us")) {
                 const user = cleanRouteTo.split("@")[0].split(":")[0];
                 if (user.length >= 14 || cleanRouteTo.endsWith("@lid")) {
@@ -610,9 +607,7 @@ export class SignalingBridge {
             }
             if (voipNode && voipNode.attrs && voipNode.attrs.to) {
                 const nodeTo = String(voipNode.attrs.to).trim();
-                if (activeGroupJid && nodeTo.endsWith("@call")) {
-                    voipNode.attrs.to = activeGroupJid;
-                } else if (!nodeTo.endsWith("@call") && !nodeTo.endsWith("@g.us")) {
+                if (!nodeTo.endsWith("@call") && !nodeTo.endsWith("@g.us")) {
                     const user = nodeTo.split("@")[0].split(":")[0];
                     if (user.length >= 14 || nodeTo.endsWith("@lid")) {
                         const device = nodeTo.includes(":") ? nodeTo.split(":")[1].split("@")[0] : "0";

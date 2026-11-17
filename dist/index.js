@@ -1,6 +1,8 @@
 /* Elaina Baileys maintained distribution. Upstream notices and license are preserved in LICENSE and NOTICE.md. */
 import { EventEmitter } from 'node:events';
 import { createHmac, randomBytes } from 'node:crypto';
+import path from 'node:path';
+import fs from 'node:fs';
 import { WasmEngine } from './wasm-engine.js';
 import { RelayRtcTransport } from './relay-transport.js';
 import { SignalingBridge, setBaileysModule, loadBaileys } from './signaling.js';
@@ -302,6 +304,7 @@ export class VoipClient {
         this._wsCallHandler = null;
         this._wsReceiptHandler = null;
         this._connectionState = 'close';
+        this._isDestroyed = false;
         this._captureStartRequested = false;
         this._audioStartTimer = null;
 
@@ -319,19 +322,22 @@ export class VoipClient {
         };
 
         this.disconnect = () => {
+            this._isDestroyed = true;
             try { this._sock?.ws?.close(); } catch {}
             this._sock = null;
+            this._connectionState = 'close';
             this._detachSocketHandlers();
         };
 
         this._initStandaloneSocket = async () => {
-            if (this._sock) return this._sock;
+            this._isDestroyed = false;
+            if (this._sock && this._connectionState !== 'close') return this._sock;
             if (!this._config.authDir) {
                 throw new Error("VoipClient needs { authDir } or { socket } in config.");
             }
             const baileys = await loadBaileys();
             const makeWASocket = baileys.default || baileys.makeWASocket;
-            const { useMultiFileAuthState } = baileys;
+            const { useMultiFileAuthState, DisconnectReason } = baileys;
             const { state, saveCreds } = await useMultiFileAuthState(this._config.authDir);
 
             const dummyLogger = {
@@ -345,11 +351,26 @@ export class VoipClient {
             };
             dummyLogger.child = () => dummyLogger;
 
+            let cfgBrowser = this._config.browser;
+            let cfgVersion = this._config.version;
+            if (!cfgBrowser || !cfgVersion) {
+                try {
+                    const cfgPath = path.resolve(process.cwd(), 'config.json');
+                    if (fs.existsSync(cfgPath)) {
+                        const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+                        if (parsed.pairing?.browser) cfgBrowser = cfgBrowser || parsed.pairing.browser;
+                        if (parsed.pairing?.version) cfgVersion = cfgVersion || parsed.pairing.version;
+                    }
+                } catch {}
+            }
+            if (!cfgBrowser) cfgBrowser = ["Mac OS", "Chrome", "139.0.7258.164"];
+            if (!cfgVersion) cfgVersion = [2, 3000, 1048712335];
+
             const sock = makeWASocket({
-                version: [2, 3000, 1048712335],
+                version: cfgVersion,
                 auth: state,
                 printQRInTerminal: false,
-                browser: ["Mac OS", "Chrome", "139.0.7258.164"],
+                browser: cfgBrowser,
                 syncFullHistory: false,
                 markOnlineOnConnect: true,
                 connectTimeoutMs: 60000,
@@ -360,14 +381,36 @@ export class VoipClient {
             });
 
             sock.ev.on('creds.update', saveCreds);
-            sock.ev.on('connection.update', (update) => {
+            sock.ev.on('connection.update', async (update) => {
                 if (update.connection) {
                     this._connectionState = update.connection;
+                }
+                if (update.connection === 'open') {
+                    this._signaling?.setSocket?.(sock);
+                }
+                if (update.connection === 'close') {
+                    const statusCode = update.lastDisconnect?.error?.output?.statusCode;
+                    const isLoggedOut = statusCode === DisconnectReason?.loggedOut || statusCode === 401 || statusCode === 403;
+                    if (!this._isDestroyed && !isLoggedOut && this._config.authDir) {
+                        this._log('[VOIP] Standalone socket closed, reconnecting...', statusCode);
+                        this._sock = null;
+                        this._connectionState = 'close';
+                        setTimeout(async () => {
+                            try {
+                                if (!this._isDestroyed && (!this._sock || this._connectionState === 'close')) {
+                                    await this._initStandaloneSocket();
+                                }
+                            } catch (e) {
+                                this._log('[VOIP Reconnect Error]', e?.message || e);
+                            }
+                        }, 1000);
+                    }
                 }
             });
 
             this._sock = sock;
             this._externalSocket = false;
+            this._signaling?.setSocket?.(sock);
             return sock;
         };
 
@@ -387,22 +430,21 @@ export class VoipClient {
                     return;
                 }
 
-                if (!this._sock.ws || this._sock.ws.readyState !== 1 || this._connectionState !== 'open') {
+                if (!this.isOpen()) {
                     await new Promise((resolve) => {
                         const timeout = setTimeout(() => resolve(), 30000);
-                        const onUpdate = (update) => {
-                            if (update.connection === 'open') {
-                                this._sock?.ev?.off?.('connection.update', onUpdate);
+                        const checkInterval = setInterval(() => {
+                            if (this.isOpen()) {
+                                clearInterval(checkInterval);
                                 clearTimeout(timeout);
                                 resolve();
                             }
-                        };
-                        this._sock.ev.on('connection.update', onUpdate);
+                        }, 500);
                     });
                 }
             }
 
-            if (!this._sock.ws || this._sock.ws.readyState !== 1) {
+            if (!this.isOpen()) {
                 throw new Error('the socket has no open websocket yet; call connect() once connection.update reports "open"');
             }
             if (!this._engine) {

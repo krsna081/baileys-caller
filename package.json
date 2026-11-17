@@ -1,16 +1,15 @@
 {
   "name": "baileys-caller",
-  "version": "0.1.0",
-  "description": "WhatsApp voice calling SDK for Node.js. Built on Baileys, audio via WhatsApp Web's WASM stack.",
-  "author": "ShellTear",
-  "private": true,
+  "version": "1.0.0",
+  "description": "WhatsApp VoIP calling SDK (Voice, Video, Group Call & Voice Chat) for Baileys.",
+  "author": "Krisna Ady S. (krsna081)",
   "type": "module",
-  "main": "./dist/index.mjs",
-  "module": "./dist/index.mjs",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "exports": {
     ".": {
-      "import": "./dist/index.mjs",
-      "types": "./dist/index.d.mts"
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "files": [
@@ -22,21 +21,18 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
-    "example": "tsx examples/call.mts",
-    "fetch-wasm": "node scripts/fetch-wasm-resources.mjs"
+    "test": "node --check dist/*.js"
   },
   "dependencies": {
-    "@roamhq/wrtc": "^0.10.0",
-    "qrcode-terminal": "^0.12.0"
+    "@roamhq/wrtc": "^0.10.0"
   },
   "peerDependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc11"
+    "@whiskeysockets/baileys": ">=6.0.0 || ^7.0.0"
   },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+  "peerDependenciesMeta": {
+    "@whiskeysockets/baileys": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=20"
@@ -45,6 +41,9 @@
     "whatsapp",
     "voip",
     "voice-call",
+    "video-call",
+    "group-call",
+    "voice-chat",
     "baileys",
     "wasm",
     "rtp",

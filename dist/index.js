@@ -404,6 +404,13 @@ export class VoipClient {
                 }
                 if (update.connection === 'open') {
                     this._signaling?.setSocket?.(sock);
+                    if (!this._engine && this.isRegistered()) {
+                        try {
+                            await this._initVoipStack();
+                        } catch (e) {
+                            this._log('[VOIP Init Stack Error]', e?.message || e);
+                        }
+                    }
                 }
                 if (update.connection === 'close') {
                     const statusCode = update.lastDisconnect?.error?.output?.statusCode;
@@ -480,6 +487,11 @@ export class VoipClient {
         };
 
         this.call = async (phoneNumber, opts = {}) => {
+            if (!this._engine || !this._signaling) {
+                if (typeof this.connect === 'function') {
+                    await this.connect();
+                }
+            }
             if (!this._engine || !this._signaling) {
                 throw new Error("Not connected. Call connect() first.");
             }

@@ -11,17 +11,17 @@ export const setBaileysModule = (mod) => {
     _baileysModule = mod;
 };
 
-const loadBaileys = async () => {
+export const loadBaileys = async () => {
     if (_baileysModule) return _baileysModule;
     try {
-        _baileysModule = await import("@whiskeysockets/baileys");
+        _baileysModule = await import("baileys");
         return _baileysModule;
     } catch {
         try {
-            _baileysModule = await import("baileys");
+            _baileysModule = await import("@whiskeysockets/baileys");
             return _baileysModule;
         } catch {
-            throw new Error("Could not import @whiskeysockets/baileys or baileys. Pass it or install as peer dependency.");
+            throw new Error("Could not import baileys or @whiskeysockets/baileys. Pass it or install as peer dependency.");
         }
     }
 };

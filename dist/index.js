@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { createHmac, randomBytes } from 'node:crypto';
 import { WasmEngine } from './wasm-engine.js';
 import { RelayRtcTransport } from './relay-transport.js';
-import { SignalingBridge } from './signaling.js';
+import { SignalingBridge, setBaileysModule, loadBaileys } from './signaling.js';
 import { AudioFeeder } from './audio-feeder.js';
 import { VideoFeeder, VIDEO_FORMAT_I420 } from './video-feeder.js';
 import { CallState } from './types.js';
@@ -304,12 +304,94 @@ export class VoipClient {
         this._captureStartRequested = false;
         this._audioStartTimer = null;
 
-        this.connect = async () => {
+        this.getSocket = () => this._sock;
+        this.isRegistered = () => !!this._sock?.authState?.creds?.registered;
+
+        this.requestPairingCode = async (phoneNumber) => {
             if (!this._sock) {
-                throw new Error('VoipClient needs the socket you are already logged in with: new VoipClient({ socket: sock }). It never opens a session of its own, so there is no second pairing or QR scan.');
+                await this._initStandaloneSocket();
             }
-            if (!this._sock.ws) {
-                throw new Error('the socket has no websocket yet; call connect() once connection.update reports "open"');
+            if (!this._sock) throw new Error("Socket not initialized yet. Call connect() first.");
+            const cleanNum = String(phoneNumber).replace(/\D/g, "");
+            return await this._sock.requestPairingCode(cleanNum);
+        };
+
+        this.disconnect = () => {
+            try { this._sock?.ws?.close(); } catch {}
+            this._sock = null;
+            this._detachSocketHandlers();
+        };
+
+        this._initStandaloneSocket = async () => {
+            if (this._sock) return this._sock;
+            if (!this._config.authDir) {
+                throw new Error("VoipClient needs { authDir } or { socket } in config.");
+            }
+            const baileys = await loadBaileys();
+            const makeWASocket = baileys.default || baileys.makeWASocket;
+            const { useMultiFileAuthState } = baileys;
+            const { state, saveCreds } = await useMultiFileAuthState(this._config.authDir);
+
+            const sock = makeWASocket({
+                auth: state,
+                printQRInTerminal: false,
+                browser: ["Mac OS", "Chrome", "139.0.7258.164"],
+                syncFullHistory: false,
+                markOnlineOnConnect: true,
+                connectTimeoutMs: 60000,
+                defaultQueryTimeoutMs: 60000,
+                keepAliveIntervalMs: 30000,
+                emitOwnEvents: true,
+                logger: {
+                    level: 'silent',
+                    trace: () => {},
+                    debug: () => {},
+                    info: () => {},
+                    warn: () => {},
+                    error: () => {},
+                    fatal: () => {},
+                    child: () => sock.logger
+                }
+            });
+
+            sock.ev.on('creds.update', saveCreds);
+
+            this._sock = sock;
+            this._externalSocket = false;
+            return sock;
+        };
+
+        this.connect = async () => {
+            if (!this._sock && this._config.authDir) {
+                await this._initStandaloneSocket();
+            }
+
+            if (!this._sock) {
+                throw new Error('VoipClient needs either { socket } or { authDir } in config.');
+            }
+
+            if (!this._externalSocket && this._config.authDir) {
+                const creds = this._sock.authState?.creds;
+                if (!creds?.registered) {
+                    this._log('[VOIP] Waiting for pairing code registration...');
+                    return;
+                }
+
+                if (!this._sock.ws || this._sock.ws.readyState !== 1) {
+                    await new Promise((resolve) => {
+                        const timeout = setTimeout(() => resolve(), 25000);
+                        this._sock.ev.on('connection.update', (update) => {
+                            if (update.connection === 'open') {
+                                clearTimeout(timeout);
+                                resolve();
+                            }
+                        });
+                    });
+                }
+            }
+
+            if (!this._sock.ws || this._sock.ws.readyState !== 1) {
+                throw new Error('the socket has no open websocket yet; call connect() once connection.update reports "open"');
             }
             await this._initVoipStack();
         };

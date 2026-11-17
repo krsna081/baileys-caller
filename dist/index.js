@@ -309,8 +309,25 @@ export class VoipClient {
         this._audioStartTimer = null;
 
         this.getSocket = () => this._sock;
-        this.isRegistered = () => !!this._sock?.authState?.creds?.registered;
-        this.isOpen = () => this._connectionState === 'open' && this._sock?.ws?.readyState === 1;
+        this.isRegistered = () => {
+            if (this._sock?.authState?.creds?.registered || this._sock?.user) return true;
+            if (this._config.authDir) {
+                try {
+                    const credsPath = path.join(this._config.authDir, 'creds.json');
+                    if (fs.existsSync(credsPath)) {
+                        const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+                        return !!creds?.registered;
+                    }
+                } catch {}
+            }
+            return false;
+        };
+        this.isOpen = () => {
+            if (this._connectionState === 'open') return true;
+            if (this._sock?.ws?.isOpen) return true;
+            if (this._sock?.ws?.socket?.readyState === 1 && this._connectionState !== 'close') return true;
+            return false;
+        };
 
         this.requestPairingCode = async (phoneNumber) => {
             if (!this._sock) {
@@ -424,8 +441,7 @@ export class VoipClient {
             }
 
             if (!this._externalSocket && this._config.authDir) {
-                const creds = this._sock.authState?.creds;
-                if (!creds?.registered) {
+                if (!this.isRegistered()) {
                     this._log('[VOIP] Waiting for pairing code registration...');
                     return;
                 }

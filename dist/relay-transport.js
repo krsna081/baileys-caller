@@ -450,6 +450,8 @@ export class RelayRtcTransport {
 
             try {
                 await promise;
+            } catch (err) {
+                this._log("[RTC RELAY ENSURE CONNECTION ERROR]", connection.info?.id, err?.message || err);
             } finally {
                 connection.connectPromise = null;
             }
@@ -533,8 +535,10 @@ export class RelayRtcTransport {
             }, CONNECTION_TIMEOUT_MS);
 
             const offer = await pc.createOffer();
+            if (pc.signalingState === "closed") return;
 
             await pc.setLocalDescription(offer);
+            if (pc.signalingState === "closed") return;
 
             const remoteSdp = buildRemoteRelayAnswer(offer.sdp ?? "", {
                 ...connection.info,

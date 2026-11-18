@@ -723,6 +723,7 @@ export class VoipClient {
             call._videoSource = opts.videoSource ?? "black";
             call._videoPlaylist = Array.isArray(opts.videoPlaylist) ? opts.videoPlaylist.filter(Boolean) : [];
             call.groupJid = groupJid;
+            call.isLightWeight = !!(opts.isLightWeight ?? opts.voiceChat ?? opts.obrolanAudio);
             call.participants = lidUserJids.map((lid, idx) => ({
                 jid: lid,
                 devices: (deviceJidsCsv[idx] ? deviceJidsCsv[idx].split(",") : [lid])
@@ -859,6 +860,7 @@ export class VoipClient {
             call._videoSource = opts.videoSource ?? "black";
             call._videoPlaylist = Array.isArray(opts.videoPlaylist) ? opts.videoPlaylist.filter(Boolean) : [];
             call.groupJid = groupJid;
+            call.isLightWeight = !!(invite?.isLightweight ?? invite?.isLightWeight ?? opts.isLightWeight ?? opts.isLightweight ?? opts.voiceChat ?? opts.obrolanAudio ?? true);
             this._activeCall = call;
 
             call.once("ended", () => {

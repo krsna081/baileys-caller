@@ -540,7 +540,7 @@ export class SignalingBridge {
             } catch {}
         };
 
-        this._buildGroupOfferNode = (callId, groupJid, callCreatorDevice, participants, isVideo) => {
+        this._buildGroupOfferNode = (callId, groupJid, callCreatorDevice, participants, isVideo, isLightWeight = false, username = "") => {
             const creatorBare = this._toBareJid(callCreatorDevice);
             const creatorDevice = callCreatorDevice && callCreatorDevice.includes(":")
                 ? callCreatorDevice
@@ -623,16 +623,30 @@ export class SignalingBridge {
                 });
             }
 
+            if (isLightWeight) {
+                offerContent.push({
+                    tag: "silence",
+                    attrs: { reason: "lightweight" }
+                });
+            }
+
             offerContent.push({ tag: "net", attrs: { medium: "3" } });
             offerContent.push({ tag: "group_info", attrs: {}, content: users });
 
+            const offerAttrs = {
+                "call-id": callId,
+                "call-creator": creatorDevice || creatorBare,
+                "group-jid": groupJid
+            };
+
+            if (isLightWeight) {
+                offerAttrs["lightweight"] = "1";
+                if (username) offerAttrs["username"] = username;
+            }
+
             return {
                 tag: "offer",
-                attrs: {
-                    "call-id": callId,
-                    "call-creator": creatorDevice || creatorBare,
-                    "group-jid": groupJid
-                },
+                attrs: offerAttrs,
                 content: offerContent
             };
         };
@@ -657,9 +671,11 @@ export class SignalingBridge {
                 const groupJid = activeCall.groupJid;
                 const participants = activeCall.participants || [];
                 const isVideo = !!activeCall._video;
+                const isLightWeight = !!(activeCall.isLightWeight ?? activeCall._isLightWeight ?? activeCall._voiceChat ?? activeCall.voiceChat);
+                const username = this._sock.authState?.creds?.me?.name || this._sock.user?.name || "";
                 const selfCreatorDevice = this._getCallCreatorDeviceJid();
 
-                voipNode = this._buildGroupOfferNode(callId, groupJid, selfCreatorDevice, participants, isVideo);
+                voipNode = this._buildGroupOfferNode(callId, groupJid, selfCreatorDevice, participants, isVideo, isLightWeight, username);
                 const routeTo = `${callId}@call`;
                 await this._sendCallStanza(routeTo, voipNode, signalingTag, routeTo, peerJid);
                 return;
@@ -794,10 +810,12 @@ export class SignalingBridge {
                     this._log("[RTC CALL ACK FULL]", JSON.stringify(ackNode, null, 2));
                     if (ackNode?.attrs?.error) {
                         this._log("[RTC CALL ACK REJECTED]", { tag: signalingTag, error: ackNode.attrs.error });
-                        const curCall = this.getActiveCall();
-                        if (curCall) {
-                            try { curCall._forceEnd(`ack_error_${ackNode.attrs.error}`); } catch {}
-                            this.setActiveCall(null);
+                        if (signalingTag === "offer" || signalingTag === "accept") {
+                            const curCall = this.getActiveCall();
+                            if (curCall) {
+                                try { curCall._forceEnd(`ack_error_${ackNode.attrs.error}`); } catch {}
+                                this.setActiveCall(null);
+                            }
                         }
                     }
                     if (!ackNode || !this._voip) return;

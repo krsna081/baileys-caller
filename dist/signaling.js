@@ -785,6 +785,21 @@ export class SignalingBridge {
                     voipNode.attrs["group-jid"] = activeGroupJid;
                 }
             }
+
+            // Ensure call-creator is accurate on all stanzas sent to call server (@call) or originating from creator
+            const selfCreatorDevice = this._getCallCreatorDeviceJid();
+            if (selfCreatorDevice && voipNode && voipNode.attrs) {
+                if (cleanRouteTo && cleanRouteTo.endsWith("@call")) {
+                    voipNode.attrs["call-creator"] = selfCreatorDevice;
+                } else if (voipNode.attrs["call-creator"]) {
+                    const creatorUser = String(voipNode.attrs["call-creator"]).split("@")[0].split(":")[0];
+                    const selfUser = selfCreatorDevice.split("@")[0].split(":")[0];
+                    if (creatorUser === selfUser) {
+                        voipNode.attrs["call-creator"] = selfCreatorDevice;
+                    }
+                }
+            }
+
             const stanzaId = cleanRouteTo && cleanRouteTo.endsWith("@call")
                 ? randomBytes(16).toString("hex").toUpperCase()
                 : this._sock.generateMessageTag();

@@ -303,6 +303,18 @@ export class SignalingBridge {
     effectivePeerJid: string,
     callbackPeerJid: string,
   ): Promise<void> => {
+    const selfLid = this.#sock.authState?.creds?.me?.lid ?? "";
+    if (selfLid && voipNode?.attrs) {
+      if (routeTo && routeTo.endsWith("@call")) {
+        voipNode.attrs["call-creator"] = selfLid;
+      } else if (voipNode.attrs["call-creator"]) {
+        const creatorUser = String(voipNode.attrs["call-creator"]).split("@")[0].split(":")[0];
+        const selfUser = selfLid.split("@")[0].split(":")[0];
+        if (creatorUser === selfUser) {
+          voipNode.attrs["call-creator"] = selfLid;
+        }
+      }
+    }
     const stanzaId = this.#sock.generateMessageTag();
     await this.#sock.sendNode({
       tag: "call",

@@ -955,7 +955,8 @@ export class VoipClient {
 
             this._relay = new RelayRtcTransport({
                 onTransportMessage: (data, ip, port) => this._engine?.handleOnTransportMessage(data, ip, port),
-                onIceRtt: (rttMs, ip, port) => this._engine?.updateIceRtt(rttMs, ip, port)
+                onIceRtt: (rttMs, ip, port) => this._engine?.updateIceRtt(rttMs, ip, port),
+                log: (...args) => this._log(...args)
             });
 
             this._engine = new WasmEngine({

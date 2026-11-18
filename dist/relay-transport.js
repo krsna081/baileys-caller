@@ -194,6 +194,7 @@ const appendRelayPacketLog = (direction, connection, packet) => {
 export class RelayRtcTransport {
     constructor(config) {
         this.config = config;
+        this._log = typeof this.config?.log === 'function' ? this.config.log : (() => {});
         this._relayInfoById = new Map();
         this._connections = new Map();
         this._totals = createEmptyStats();
@@ -465,6 +466,7 @@ export class RelayRtcTransport {
             this._closePeerObjects(connection);
 
             connection.state = "connecting";
+            this._log("[RTC RELAY CONNECTING]", connection.info?.id);
 
             const pc = new RTCPeerConnection();
             const dc = pc.createDataChannel("pre-negotiated", {
@@ -483,6 +485,7 @@ export class RelayRtcTransport {
             dc.onopen = () => {
                 connection.state = "open";
                 connection.isReconnecting = false;
+                this._log("[RTC RELAY DC OPEN]", connection.info?.id);
 
                 if (connection.connectionTimeout) {
                     clearTimeout(connection.connectionTimeout);
@@ -494,12 +497,14 @@ export class RelayRtcTransport {
             };
 
             dc.onclose = () => {
+                this._log("[RTC RELAY DC CLOSE]", connection.info?.id);
                 if (connection.state !== "failed") {
                     connection.state = "closed";
                 }
             };
 
             dc.onerror = () => {
+                this._log("[RTC RELAY DC ERROR]", connection.info?.id);
                 connection.state = "failed";
             };
 
@@ -514,6 +519,7 @@ export class RelayRtcTransport {
             };
 
             pc.oniceconnectionstatechange = () => {
+                this._log("[RTC RELAY ICE STATE]", connection.info?.id, pc.iceConnectionState);
                 if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
                     connection.state = "failed";
                 }

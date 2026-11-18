@@ -982,7 +982,15 @@ export class VoipClient {
             });
 
             await this._engine.initialize();
-            this._signaling.attachEngine(this._engine);
+            this._signaling.attachEngine(this._engine, this);
+            try {
+                Object.defineProperty(this._engine, "_activeCall", {
+                    get: () => this._activeCall,
+                    set: val => { this._activeCall = val; },
+                    configurable: true,
+                    enumerable: true
+                });
+            } catch {}
 
             const selfPnJidRaw =
                 this._sock.authState?.creds?.me?.id ||

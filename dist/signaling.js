@@ -72,8 +72,51 @@ export class SignalingBridge {
         this._outgoingSignalingQueue = Promise.resolve(undefined);
         this._incomingSignalingQueue = Promise.resolve(undefined);
 
-        this.attachEngine = voip => {
+        this._caller = null;
+        this._activeCall = null;
+
+        this.attachEngine = (voip, caller) => {
             this._voip = voip;
+            this._caller = caller || (voip && voip._engine ? voip : null);
+        };
+
+        this.setActiveCall = call => {
+            this._activeCall = call;
+        };
+
+        this.getActiveCall = () => {
+            return this._activeCall || this._caller?._activeCall || this._voip?._activeCall || null;
+        };
+
+        this._getCallCreatorDeviceJid = () => {
+            let meLid =
+                this._sock?.authState?.creds?.me?.lid ||
+                this._sock?.authState?.creds?.me?.lidJid ||
+                this._sock?.user?.lid ||
+                "";
+            const meId =
+                this._sock?.authState?.creds?.me?.id ||
+                this._sock?.user?.id ||
+                "";
+
+            const deviceMatch = (meLid && meLid.includes(":"))
+                ? meLid.match(/:(\d+)@/)
+                : (meId ? meId.match(/:(\d+)@/) : null);
+            const deviceId = deviceMatch ? deviceMatch[1] : (meId.includes(":") ? meId.split(":")[1].split("@")[0] : "0");
+
+            if (!meLid && meId) {
+                meLid = meId;
+            }
+
+            if (meLid && !meLid.includes(":")) {
+                const parts = meLid.split("@");
+                if (deviceId && deviceId !== "0") {
+                    return `${parts[0]}:${deviceId}@${parts[1] || "lid"}`;
+                }
+                return `${parts[0]}:0@${parts[1] || "lid"}`;
+            }
+
+            return meLid;
         };
 
         this.init = async () => {
@@ -544,6 +587,14 @@ export class SignalingBridge {
                 const devices = [...new Set(rawDevices.map(d => normalizeDeviceJid(d)).filter(Boolean))];
                 if (!devices.length) devices.push(partBare);
 
+                devices.sort((a, b) => {
+                    const aIsPrimary = !a.includes(":") || a.includes(":0@");
+                    const bIsPrimary = !b.includes(":") || b.includes(":0@");
+                    if (aIsPrimary && !bIsPrimary) return -1;
+                    if (!aIsPrimary && bIsPrimary) return 1;
+                    return 0;
+                });
+
                 users.push({
                     tag: "user",
                     attrs: { jid: partBare },
@@ -601,16 +652,12 @@ export class SignalingBridge {
             const effectivePeerJid = this._resolveOutboundPeerJid(callId, peerJid);
 
             // Group Call Offer builder (Zapo / WhatsApp MD VoIP specification compliant)
-            if (signalingTag === "offer" && this._voip?._activeCall?.groupJid) {
-                const groupJid = this._voip._activeCall.groupJid;
-                const participants = this._voip._activeCall.participants || [];
-                const isVideo = !!this._voip._activeCall._video;
-                const selfCreatorDevice =
-                    this._sock.authState?.creds?.me?.lid ||
-                    this._sock.authState?.creds?.me?.lidJid ||
-                    this._sock.authState?.creds?.me?.id ||
-                    this._sock.user?.lid ||
-                    this._sock.user?.id || "";
+            const activeCall = this.getActiveCall();
+            if (signalingTag === "offer" && activeCall?.groupJid) {
+                const groupJid = activeCall.groupJid;
+                const participants = activeCall.participants || [];
+                const isVideo = !!activeCall._video;
+                const selfCreatorDevice = this._getCallCreatorDeviceJid();
 
                 voipNode = this._buildGroupOfferNode(callId, groupJid, selfCreatorDevice, participants, isVideo);
                 const routeTo = `${callId}@call`;
@@ -620,16 +667,10 @@ export class SignalingBridge {
 
             if (signalingTag === "offer") {
                 if (!voipNode.attrs["call-creator"]) {
-                    const selfCreator =
-                        this._sock.authState?.creds?.me?.lid ||
-                        this._sock.authState?.creds?.me?.lidJid ||
-                        this._sock.authState?.creds?.me?.id ||
-                        this._sock.user?.lid ||
-                        this._sock.user?.id ||
-                        this._sock.user?.jid;
-                    if (selfCreator) voipNode.attrs["call-creator"] = this._toBareJid(selfCreator);
+                    const selfCreator = this._getCallCreatorDeviceJid();
+                    if (selfCreator) voipNode.attrs["call-creator"] = selfCreator;
                 }
-                const activeGroupJid = this._voip?._activeCall?.groupJid || (peerJid && peerJid.endsWith("@g.us") ? peerJid : null);
+                const activeGroupJid = this.getActiveCall()?.groupJid || (peerJid && peerJid.endsWith("@g.us") ? peerJid : null);
                 if (activeGroupJid && !voipNode.attrs["group-jid"]) {
                     voipNode.attrs["group-jid"] = activeGroupJid;
                 }
@@ -697,7 +738,7 @@ export class SignalingBridge {
 
         this._sendCallStanza = async (routeTo, voipNode, signalingTag, effectivePeerJid, callbackPeerJid) => {
             let cleanRouteTo = routeTo;
-            const activeGroupJid = this._voip?._activeCall?.groupJid;
+            const activeGroupJid = this.getActiveCall()?.groupJid;
             if (cleanRouteTo && !cleanRouteTo.endsWith("@call") && !cleanRouteTo.endsWith("@g.us")) {
                 const user = cleanRouteTo.split("@")[0].split(":")[0];
                 if (user.length >= 14 || cleanRouteTo.endsWith("@lid")) {
@@ -753,9 +794,10 @@ export class SignalingBridge {
                     this._log("[RTC CALL ACK FULL]", JSON.stringify(ackNode, null, 2));
                     if (ackNode?.attrs?.error) {
                         this._log("[RTC CALL ACK REJECTED]", { tag: signalingTag, error: ackNode.attrs.error });
-                        if (this._voip?._activeCall) {
-                            try { this._voip._activeCall._forceEnd(`ack_error_${ackNode.attrs.error}`); } catch {}
-                            this._voip._activeCall = null;
+                        const curCall = this.getActiveCall();
+                        if (curCall) {
+                            try { curCall._forceEnd(`ack_error_${ackNode.attrs.error}`); } catch {}
+                            this.setActiveCall(null);
                         }
                     }
                     if (!ackNode || !this._voip) return;
@@ -795,8 +837,9 @@ export class SignalingBridge {
                 ""
             );
             let effectiveActiveCallId = activeCallId;
-            if (this._voip?._activeCall && (this._voip._activeCall._ended || this._voip._activeCall.state === 0 || this._voip._activeCall.state === 7)) {
-                this._voip._activeCall = null;
+            const curIncomingCall = this.getActiveCall();
+            if (curIncomingCall && (curIncomingCall._ended || curIncomingCall.state === 0 || curIncomingCall.state === 7)) {
+                this.setActiveCall(null);
                 effectiveActiveCallId = "";
             }
 
@@ -883,8 +926,9 @@ export class SignalingBridge {
                 ""
             );
             let effectiveActiveCallId = activeCallId;
-            if (this._voip?._activeCall && (this._voip._activeCall._ended || this._voip._activeCall.state === 0 || this._voip._activeCall.state === 7)) {
-                this._voip._activeCall = null;
+            const curIncomingCall = this.getActiveCall();
+            if (curIncomingCall && (curIncomingCall._ended || curIncomingCall.state === 0 || curIncomingCall.state === 7)) {
+                this.setActiveCall(null);
                 effectiveActiveCallId = "";
             }
 

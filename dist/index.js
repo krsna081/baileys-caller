@@ -255,6 +255,7 @@ export class ActiveCall extends EventEmitter {
         this._forceEnd = reason => {
             if (this._ended) return;
             this._ended = true;
+            try { this.engine?.endCall?.(0, false); } catch {}
             this._clearIdleTimer();
             if (this._endTimer) {
                 clearTimeout(this._endTimer);
@@ -701,6 +702,14 @@ export class VoipClient {
                 this._log("[RTC GROUP ENSURE SESSIONS WARNING]", err?.message || err);
             }
 
+            if (this._activeCall) {
+                try { this._activeCall._forceEnd("replaced"); } catch {}
+                this._activeCall = null;
+            }
+            try { this._engine?.endCall?.(0, false); } catch {}
+            try { this._feeder?.stop(); } catch {}
+            this._feeder = null;
+
             const callId = randomBytes(16).toString("hex").toUpperCase();
             const call = new ActiveCall(callId, this._engine, opts.durationMs ?? 120000);
 
@@ -727,7 +736,7 @@ export class VoipClient {
             this._log("[RTC START GROUP CALL PARAMS]", { groupJid, callId, pnUserJids, lidUserJids, deviceJidsCsv });
 
             try {
-                const startResult = this._engine.startGroupCall({
+                const groupCallPayload = {
                     pnUserJids,
                     lidUserJids,
                     deviceJidsCsv,
@@ -739,9 +748,19 @@ export class VoipClient {
                     username: this._sock.authState?.creds?.me?.name || this._sock.user?.name || "",
                     callFromUI: (opts.isLightWeight ?? opts.voiceChat ?? opts.obrolanAudio) ? 1 : 0,
                     lobbyEntryType: (opts.isLightWeight ?? opts.voiceChat ?? opts.obrolanAudio) ? 1 : 0
-                });
+                };
+                let startResult = this._engine.startGroupCall(groupCallPayload);
                 this._log("[RTC START GROUP CALL RESULT]", startResult);
-                if (typeof startResult === 'number' && startResult < 0) {
+
+                if (typeof startResult === 'number' && startResult !== 0) {
+                    this._log("[RTC START GROUP CALL ERROR NON-ZERO, RESETTING ENGINE]", startResult);
+                    try { this._engine?.endCall?.(0, false); } catch {}
+                    await new Promise(r => setTimeout(r, 250));
+                    startResult = this._engine.startGroupCall(groupCallPayload);
+                    this._log("[RTC START GROUP CALL RETRY RESULT]", startResult);
+                }
+
+                if (typeof startResult === 'number' && startResult !== 0) {
                     throw new Error(`WASM engine rejected startVoipGroupCall (code: ${startResult})`);
                 }
                 try {

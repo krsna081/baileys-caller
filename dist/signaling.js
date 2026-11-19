@@ -668,6 +668,15 @@ export class SignalingBridge {
             // Group Call Offer builder (Zapo / WhatsApp MD VoIP specification compliant)
             const activeCall = this.getActiveCall();
             if (signalingTag === "offer" && activeCall?.groupJid) {
+                const rawEnc = getBinaryNodeChild(voipNode, "enc");
+                if (rawEnc && rawEnc.content instanceof Uint8Array && rawEnc.content.length === 32) {
+                    activeCall._groupCallKey = Buffer.from(rawEnc.content);
+                } else if (!activeCall._groupCallKey) {
+                    activeCall._groupCallKey = randomBytes(32);
+                }
+                if (!activeCall._keyedDevices) {
+                    activeCall._keyedDevices = new Set();
+                }
                 const groupJid = activeCall.groupJid;
                 const participants = activeCall.participants || [];
                 const isVideo = !!activeCall._video;
@@ -786,6 +795,20 @@ export class SignalingBridge {
                 }
             }
 
+            // Handle peer_state normalization according to WACRG & Zapo specifications
+            if (signalingTag === "peer_state" && voipNode) {
+                if (voipNode.attrs && !voipNode.attrs["t"]) {
+                    voipNode.attrs["t"] = String(Math.floor(Date.now()));
+                }
+                const { getAllBinaryNodeChildren } = this._baileys;
+                const children = getAllBinaryNodeChildren(voipNode);
+                for (const child of children) {
+                    if (child.tag === "user" && child.attrs && child.attrs.jid) {
+                        child.attrs.jid = this._toBareJid(child.attrs.jid);
+                    }
+                }
+            }
+
             // Ensure call-creator is accurate on all stanzas sent to call server (@call) or originating from creator
             const selfCreatorDevice = this._getCallCreatorDeviceJid();
             if (selfCreatorDevice && voipNode && voipNode.attrs) {
@@ -804,8 +827,8 @@ export class SignalingBridge {
                 ? randomBytes(16).toString("hex").toUpperCase()
                 : this._sock.generateMessageTag();
             this._log("[RTC SEND CALL STANZA]", { to: cleanRouteTo, id: stanzaId, tag: signalingTag, peer: cleanEffective });
-            if (signalingTag === "offer") {
-                this._log("[RTC GROUP OFFER STANZA FULL]", JSON.stringify(voipNode, (k, v) => (v instanceof Uint8Array ? `<bytes ${v.length}>` : v), 2));
+            if (signalingTag === "offer" || signalingTag === "peer_state") {
+                this._log(`[RTC ${signalingTag.toUpperCase()} STANZA FULL]`, JSON.stringify(voipNode, (k, v) => (v instanceof Uint8Array ? `<bytes ${v.length}>` : v), 2));
             }
 
             await this._sock.sendNode({
@@ -835,6 +858,11 @@ export class SignalingBridge {
                     }
                     if (!ackNode || !this._voip) return;
                     if (typeof this._voip.isInitialized === "function" && !this._voip.isInitialized()) return;
+
+                    // If peer_state had an ack error, do not poison WASM state machine with it
+                    if (signalingTag === "peer_state" && ackNode.attrs?.error) {
+                        return;
+                    }
 
                     const { encodeBinaryNode } = this._baileys;
                     const ackPayload = Buffer.from(encodeBinaryNode(ackNode)).toString("base64");
@@ -926,6 +954,21 @@ export class SignalingBridge {
             if (callIdForRouting && routedPeerJid) this._incomingCallPeerById.set(callIdForRouting, routedPeerJid);
             const tcToken = await this.ensureTcToken(routedPeerJid, callbackPeerJid);
 
+            // Auto-distribute group callKey to joining participant device
+            const curActiveCall = this.getActiveCall();
+            if (curActiveCall?.groupJid && curActiveCall._groupCallKey && senderDeviceJid) {
+                const peerDev = this._toCallDeviceJid(senderDeviceJid);
+                if (peerDev && !this._isSelfJid(peerDev)) {
+                    if (usableNode.tag === "enc_rekey" || !curActiveCall._keyedDevices?.has(peerDev)) {
+                        if (!curActiveCall._keyedDevices) curActiveCall._keyedDevices = new Set();
+                        curActiveCall._keyedDevices.add(peerDev);
+                        const creatorDev = this._getCallCreatorDeviceJid();
+                        this.sendEncRekey(peerDev, curActiveCall.callId, creatorDev, curActiveCall._groupCallKey)
+                            .catch(err => this._log("[RTC AUTO ENC_REKEY ERROR]", err?.message || err));
+                    }
+                }
+            }
+
             if (!voip || (typeof voip.isInitialized === "function" && !voip.isInitialized())) return;
 
             switch (usableNode.tag) {
@@ -979,6 +1022,21 @@ export class SignalingBridge {
                 : this._preferOrderedRouteJid(storedPeerJid, callbackPeerJid);
             if (callIdForRouting && routedPeerJid) this._incomingCallPeerById.set(callIdForRouting, routedPeerJid);
             const tcToken = await this.ensureTcToken(routedPeerJid, callbackPeerJid);
+
+            // Auto-distribute group callKey to joining participant device
+            const curActiveCall = this.getActiveCall();
+            if (curActiveCall?.groupJid && curActiveCall._groupCallKey && senderDeviceJid) {
+                const peerDev = this._toCallDeviceJid(senderDeviceJid);
+                if (peerDev && !this._isSelfJid(peerDev)) {
+                    if (usableNode.tag === "enc_rekey" || !curActiveCall._keyedDevices?.has(peerDev)) {
+                        if (!curActiveCall._keyedDevices) curActiveCall._keyedDevices = new Set();
+                        curActiveCall._keyedDevices.add(peerDev);
+                        const creatorDev = this._getCallCreatorDeviceJid();
+                        this.sendEncRekey(peerDev, curActiveCall.callId, creatorDev, curActiveCall._groupCallKey)
+                            .catch(err => this._log("[RTC AUTO ENC_REKEY ERROR]", err?.message || err));
+                    }
+                }
+            }
             if (!voip || (typeof voip.isInitialized === "function" && !voip.isInitialized())) return;
             this._log("[RTC INCOMING RECEIPT]", {
                 from: node.attrs?.from,
@@ -1023,6 +1081,48 @@ export class SignalingBridge {
                 encNode: { tag: "enc", attrs: { v: "2", type, count: String(count) }, content: Buffer.from(ciphertext) },
                 shouldIncludeDeviceIdentity: type === "pkmsg"
             };
+        };
+
+        this.sendEncRekey = async (peerDeviceJid, callId, callCreator, callKey, transactionId = 0) => {
+            const cleanDeviceJid = this._toCallDeviceJid(peerDeviceJid);
+            if (!cleanDeviceJid || !callKey) return;
+            const encrypted = await this._encryptCallKey(cleanDeviceJid, callKey, 0);
+            const content = [
+                { tag: "encopt", attrs: { keygen: "2" } },
+                encrypted.encNode
+            ];
+            const rekeyChild = {
+                tag: "enc_rekey",
+                attrs: {
+                    "call-id": callId,
+                    "call-creator": callCreator,
+                    "transaction-id": String(transactionId)
+                },
+                content
+            };
+            if (encrypted.shouldIncludeDeviceIdentity) {
+                this._appendDeviceIdentity(rekeyChild);
+            }
+            const stanzaId = randomBytes(16).toString("hex").toUpperCase();
+            const rekeyNode = {
+                tag: "call",
+                attrs: { to: cleanDeviceJid, id: stanzaId },
+                content: [rekeyChild]
+            };
+            this._log("[RTC DISTRIBUTE GROUP ENC_REKEY]", {
+                to: cleanDeviceJid,
+                callId,
+                transactionId
+            });
+            await this._sock.sendNode(rekeyNode);
+        };
+
+        this._isSelfJid = jid => {
+            if (!jid) return false;
+            const clean = String(jid).split("@")[0].split(":")[0];
+            const meLid = String(this._sock?.authState?.creds?.me?.lid || "").split("@")[0].split(":")[0];
+            const mePn = String(this._sock?.authState?.creds?.me?.id || this._sock?.user?.id || "").split("@")[0].split(":")[0];
+            return (meLid && clean === meLid) || (mePn && clean === mePn);
         };
 
         this._ensureSignalSessions = async (jids, refresh) => {

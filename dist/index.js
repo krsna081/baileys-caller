@@ -728,6 +728,8 @@ export class VoipClient {
                 jid: lid,
                 devices: (deviceJidsCsv[idx] ? deviceJidsCsv[idx].split(",") : [lid])
             }));
+            call._groupCallKey = randomBytes(32);
+            call._keyedDevices = new Set();
             this._activeCall = call;
 
             call.once("ended", () => {
@@ -1111,6 +1113,28 @@ export class VoipClient {
                         const st = Number(p.state);
                         return st === 1 || st === 11 || st === 3;
                     });
+                    if (this._activeCall._groupCallKey && this._signaling) {
+                        for (const p of participants) {
+                            const st = Number(p.state);
+                            if (st === 1 || st === 11 || st === 3) {
+                                const rawJid = String(p.jid?.raw_jid || p.jid?.identifier || p.jid || "");
+                                if (!rawJid || this._signaling._isSelfJid?.(rawJid)) continue;
+                                const bare = this._signaling._toBareJid(rawJid);
+                                const match = this._activeCall.participants?.find(item => this._signaling._toBareJid(item.jid) === bare);
+                                const targetDevices = match?.devices?.length ? match.devices : [this._signaling._toCallDeviceJid(rawJid)];
+                                for (const dev of targetDevices) {
+                                    const cleanDev = this._signaling._toCallDeviceJid(dev);
+                                    if (cleanDev && !this._signaling._isSelfJid?.(cleanDev) && !this._activeCall._keyedDevices?.has(cleanDev)) {
+                                        if (!this._activeCall._keyedDevices) this._activeCall._keyedDevices = new Set();
+                                        this._activeCall._keyedDevices.add(cleanDev);
+                                        const creatorDev = this._signaling._getCallCreatorDeviceJid();
+                                        this._signaling.sendEncRekey(cleanDev, this._activeCall.callId, creatorDev, this._activeCall._groupCallKey)
+                                            .catch(err => this._log("[RTC EVENT REKEY ERROR]", err?.message || err));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (anyConnected) {
                         try { this._engine?.acceptCall(true, false); } catch {}
                         try { this._engine?.setMute(false); } catch {}

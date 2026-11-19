@@ -520,6 +520,52 @@ export class RelayRtcTransport {
                 }
             };
 
+            pc.ondatachannel = event => {
+                const incomingDc = event.channel;
+                this._log("[RTC RELAY INCOMING DC]", connection.info?.id, incomingDc?.label);
+                if (incomingDc) {
+                    connection.dataChannel = incomingDc;
+                    incomingDc.binaryType = "arraybuffer";
+                    incomingDc.onopen = () => {
+                        connection.state = "open";
+                        connection.isReconnecting = false;
+                        this._log("[RTC RELAY INCOMING DC OPEN]", connection.info?.id);
+                        if (connection.connectionTimeout) {
+                            clearTimeout(connection.connectionTimeout);
+                            connection.connectionTimeout = null;
+                        }
+                        this._flushBufferedPackets(connection);
+                        this._startIceRttPolling(connection);
+                    };
+                    incomingDc.onclose = () => {
+                        this._log("[RTC RELAY INCOMING DC CLOSE]", connection.info?.id);
+                        if (connection.state !== "failed") {
+                            connection.state = "closed";
+                        }
+                    };
+                    incomingDc.onerror = () => {
+                        this._log("[RTC RELAY INCOMING DC ERROR]", connection.info?.id);
+                        connection.state = "failed";
+                    };
+                    incomingDc.onmessage = ev => {
+                        this._handleIncomingPacket(connection, ev.data);
+                    };
+                }
+            };
+
+            pc.onconnectionstatechange = () => {
+                this._log("[RTC RELAY CONN STATE]", connection.info?.id, pc.connectionState);
+                if (pc.connectionState === "connected") {
+                    connection.state = "open";
+                } else if (pc.connectionState === "failed") {
+                    connection.state = "failed";
+                }
+            };
+
+            pc.onsignalingstatechange = () => {
+                this._log("[RTC RELAY SIGNALING STATE]", connection.info?.id, pc.signalingState);
+            };
+
             pc.oniceconnectionstatechange = () => {
                 this._log("[RTC RELAY ICE STATE]", connection.info?.id, pc.iceConnectionState);
                 if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
@@ -545,6 +591,7 @@ export class RelayRtcTransport {
                 port: getRtcConnectPort(connection.info)
             });
 
+            if (pc.signalingState === "closed") return;
             await pc.setRemoteDescription({
                 type: "answer",
                 sdp: remoteSdp
@@ -612,6 +659,7 @@ export class RelayRtcTransport {
                 const offer = await pc.createOffer({
                     iceRestart: false
                 });
+                if (pc.signalingState === "closed") return;
 
                 let localSdp = offer.sdp ?? "";
 
@@ -619,6 +667,7 @@ export class RelayRtcTransport {
                     localSdp = `${removeIceCandidates(localSdp)}a=${connection.iceCandidate}\r\na=end-of-candidates\r\n`;
                 }
 
+                if (pc.signalingState === "closed") return;
                 await pc.setLocalDescription({
                     type: "offer",
                     sdp: localSdp
@@ -629,6 +678,7 @@ export class RelayRtcTransport {
                     port: getRtcConnectPort(connection.info)
                 });
 
+                if (pc.signalingState === "closed") return;
                 await pc.setRemoteDescription({
                     type: "answer",
                     sdp: remoteSdp
